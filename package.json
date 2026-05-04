@@ -13,6 +13,7 @@
     "deploy": "vercel deploy --prod"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.105.3",
     "hono": "^4.7.0",
     "yaml": "^2.8.4"
   },

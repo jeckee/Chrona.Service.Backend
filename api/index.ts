@@ -2,11 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import { Hono } from "hono"
 import { agentRoute } from "../src/routes/agent.js"
 import { healthRoute } from "../src/routes/health.js"
+import { meRoute } from "../src/routes/me.js"
 
 export const app = new Hono().basePath("/api/v1")
 
-app.route("/", agentRoute)
 app.route("/", healthRoute)
+app.route("/", meRoute)
+app.route("/", agentRoute)
 
 app.notFound((c) =>
   c.json({ ok: false, error: "not_found", path: c.req.path }, 404),

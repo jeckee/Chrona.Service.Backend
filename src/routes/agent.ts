@@ -1,6 +1,6 @@
 import type { Context } from "hono"
 import { Hono } from "hono"
-import { mockAuth, type AuthEnv } from "../middleware/mockAuth.js"
+import { authMiddleware, type AuthEnv } from "../middleware/auth.js"
 import { callLLM } from "../services/openrouter.js"
 import type {
   SchedulingRequest,
@@ -101,7 +101,7 @@ function summaryUserPrompt(
 
 export const agentRoute = new Hono<AuthEnv>()
 
-agentRoute.use("*", mockAuth)
+agentRoute.use("*", authMiddleware)
 
 agentRoute.post("/agent/schedule", async (c) => {
   let body: unknown
