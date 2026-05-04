@@ -1,9 +1,13 @@
 import type { Context } from "hono"
 import { Hono } from "hono"
-import { mockAuth, type AuthEnv } from "../middleware/mockAuth"
-import { callLLM } from "../services/openrouter"
-import type { SchedulingRequest, SchedulingResponse, SummaryRequest } from "../types/agent"
-import { loadPrompt, renderTemplate } from "../utils/promptLoader"
+import { mockAuth, type AuthEnv } from "../middleware/mockAuth.js"
+import { callLLM } from "../services/openrouter.js"
+import type {
+  SchedulingRequest,
+  SchedulingResponse,
+  SummaryRequest,
+} from "../types/agent.js"
+import { loadPrompt, renderTemplate } from "../utils/promptLoader.js"
 
 function jsonBadRequest(c: Context, message: string) {
   return c.json({ error: "Bad Request", message }, 400)

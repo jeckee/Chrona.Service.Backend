@@ -1,1 +1,1 @@
-export { app } from "../api/index"
+export { app } from "../api/index.js"

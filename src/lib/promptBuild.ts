@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parse } from "yaml"
-import type { SchedulingRequest, SummaryRequest } from "../types/agent"
+import type { SchedulingRequest, SummaryRequest } from "../types/agent.js"
 
 type PromptDoc = {
   system: string

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { Hono } from "hono"
-import { agentRoute } from "../src/routes/agent"
-import { healthRoute } from "../src/routes/health"
+import { agentRoute } from "../src/routes/agent.js"
+import { healthRoute } from "../src/routes/health.js"
 
 export const app = new Hono().basePath("/api/v1")
 

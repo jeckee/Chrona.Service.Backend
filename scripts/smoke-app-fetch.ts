@@ -2,7 +2,7 @@
  * Smoke test via Hono app.fetch() (no Vercel CLI).
  * Run: npx tsx scripts/smoke-app-fetch.ts
  */
-import { app } from "../src/app"
+import { app } from "../src/app.js"
 
 async function req(method: string, path: string, body?: unknown) {
   const init: RequestInit = { method }
