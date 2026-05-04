@@ -1,0 +1,21 @@
+{
+  "name": "chrona.service.backend",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "vercel dev",
+    "typecheck": "tsc --noEmit",
+    "deploy": "vercel deploy --prod"
+  },
+  "dependencies": {
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vercel": "^53.1.0"
+  }
+}
