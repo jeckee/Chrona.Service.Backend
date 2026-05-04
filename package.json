@@ -8,10 +8,12 @@
   "scripts": {
     "start": "vercel dev",
     "typecheck": "tsc --noEmit",
+    "smoke": "npx tsx scripts/smoke-app-fetch.ts",
     "deploy": "vercel deploy --prod"
   },
   "dependencies": {
-    "hono": "^4.7.0"
+    "hono": "^4.7.0",
+    "yaml": "^2.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
