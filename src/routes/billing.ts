@@ -49,6 +49,22 @@ function validateVerifyBody(
   return { signedTransaction: o.signedTransaction }
 }
 
+/** Bundlers may duplicate class identity across chunks; fall back to `error.name`. */
+function isAppleTransactionRejected(e: unknown): boolean {
+  return (
+    e instanceof AppleTransactionVerificationError ||
+    (e instanceof Error && e.name === "AppleTransactionVerificationError")
+  )
+}
+
+function appleRejectDetails(e: Error): Record<string, unknown> | undefined {
+  const d = (e as { details?: unknown }).details
+  if (d !== undefined && typeof d === "object" && d !== null && !Array.isArray(d)) {
+    return d as Record<string, unknown>
+  }
+  return undefined
+}
+
 export const billingRoute = new Hono<AuthEnv>()
 
 billingRoute.use("*", authMiddleware)
@@ -76,8 +92,28 @@ billingRoute.post("/subscriptions/verify", async (c) => {
       expectedAppAccountToken: user.id,
     })
   } catch (e) {
-    if (e instanceof AppleTransactionVerificationError) {
+    const summary =
+      e instanceof Error
+        ? {
+            name: e.name,
+            message: e.message,
+            stack: (e.stack ?? "").slice(0, 400),
+          }
+        : { name: typeof e, message: String(e), stack: "" }
+    console.error(
+      "[subscriptions/verify] verify threw:",
+      JSON.stringify(summary),
+    )
+
+    if (isAppleTransactionRejected(e) && e instanceof Error) {
       console.warn("[subscriptions/verify] reject:", e.message)
+      const details = appleRejectDetails(e)
+      if (details !== undefined) {
+        console.error(
+          "[subscriptions/verify] reject details:",
+          JSON.stringify(details),
+        )
+      }
       return jsonInvalidTransaction(c)
     }
     const message = e instanceof Error ? e.message : String(e)
