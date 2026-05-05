@@ -4,6 +4,99 @@ Base URL path: `/api/v1`. All agent endpoints expect `Content-Type: application/
 
 ---
 
+## GET `/me`
+
+Returns authenticated user profile and entitlement status.
+
+### Response JSON (200)
+
+```json
+{
+  "user": {
+    "id": "supabase-user-id",
+    "email": "user@example.com"
+  },
+  "entitlement": {
+    "status": "none",
+    "productId": null,
+    "expiresAt": null,
+    "trialEndsAt": null
+  }
+}
+```
+
+`entitlement.status` is always one of:
+- `none`
+- `trial`
+- `active`
+- `expired`
+
+---
+
+## POST `/billing/apple/verify`
+
+Apple subscription verification endpoint skeleton (authenticated).  
+Current phase is placeholder-only for macOS integration and does **not** validate StoreKit with Apple yet.
+
+### Request JSON
+
+At least one of `transactionId` or `signedTransactionInfo` is required.
+
+```json
+{
+  "productId": "chrona.pro.monthly",
+  "transactionId": "2000000123456789",
+  "signedTransactionInfo": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "appAccountToken": "supabase-user-id"
+}
+```
+
+### Response JSON (501)
+
+```json
+{
+  "error": {
+    "code": "NOT_IMPLEMENTED",
+    "message": "Apple subscription verify is not implemented yet. Keep calling /api/v1/me to refresh entitlement state."
+  }
+}
+```
+
+---
+
+## POST `/billing/apple/restore`
+
+Apple restore endpoint skeleton (authenticated).  
+Current phase is placeholder-only for macOS integration and does **not** validate StoreKit with Apple yet.
+
+### Request JSON
+
+```json
+{
+  "transactions": [
+    {
+      "transactionId": "2000000123456789",
+      "signedTransactionInfo": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  ]
+}
+```
+
+`transactions` is optional in this placeholder stage.
+
+### Response JSON (501)
+
+```json
+{
+  "error": {
+    "code": "NOT_IMPLEMENTED",
+    "message": "Apple restore is not implemented yet. Keep calling /api/v1/me to refresh entitlement state."
+  }
+}
+```
+
+---
+
 ## POST `/agent/schedule`
 
 Scheduling protocol (distinct from summary). Validates top-level JSON shape then returns a **mock** scheduling result (no model call).
@@ -70,6 +163,21 @@ Example:
 
 ---
 
+### Subscription required (402)
+
+When entitlement is not usable (`none`/`expired`), agent endpoints return:
+
+```json
+{
+  "error": {
+    "code": "SUBSCRIPTION_REQUIRED",
+    "message": "Subscription required to use Chrona"
+  }
+}
+```
+
+---
+
 ## POST `/agent/summary`
 
 Daily summary protocol (distinct from schedule). Validates top-level JSON shape then returns fixed **mock** text (no model call).
@@ -118,6 +226,21 @@ Example:
 {
   "error": "Bad Request",
   "message": "date must be a non-empty string."
+}
+```
+
+---
+
+### Subscription required (402)
+
+When entitlement is not usable (`none`/`expired`), agent endpoints return:
+
+```json
+{
+  "error": {
+    "code": "SUBSCRIPTION_REQUIRED",
+    "message": "Subscription required to use Chrona"
+  }
 }
 ```
 

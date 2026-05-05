@@ -1,6 +1,7 @@
 import type { Context } from "hono"
 import { Hono } from "hono"
 import { authMiddleware, type AuthEnv } from "../middleware/auth.js"
+import { requireEntitlementMiddleware } from "../middleware/entitlement.js"
 import { callLLM } from "../services/openrouter.js"
 import type {
   SchedulingRequest,
@@ -102,6 +103,7 @@ function summaryUserPrompt(
 export const agentRoute = new Hono<AuthEnv>()
 
 agentRoute.use("*", authMiddleware)
+agentRoute.use("*", requireEntitlementMiddleware)
 
 agentRoute.post("/agent/schedule", async (c) => {
   let body: unknown

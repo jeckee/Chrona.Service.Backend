@@ -1,0 +1,153 @@
+import {
+  createSupabaseUserClient,
+  getSupabaseServiceRole,
+} from "../lib/supabase.js"
+
+export type EntitlementStatus = "none" | "trial" | "active" | "expired"
+
+export type EntitlementView = {
+  status: EntitlementStatus
+  productId: string | null
+  expiresAt: string | null
+  trialEndsAt: string | null
+}
+
+type EntitlementRow = {
+  user_id: string
+  status: string
+  product_id: string | null
+  expires_at: string | null
+  trial_ends_at: string | null
+}
+
+const ENTITLEMENT_COLUMNS =
+  "user_id, status, product_id, expires_at, trial_ends_at"
+
+const VALID_STATUSES: ReadonlySet<string> = new Set([
+  "none",
+  "trial",
+  "active",
+  "expired",
+])
+
+const NONE_VIEW: EntitlementView = {
+  status: "none",
+  productId: null,
+  expiresAt: null,
+  trialEndsAt: null,
+}
+
+function normalizeStatus(raw: string): EntitlementStatus {
+  if (VALID_STATUSES.has(raw)) {
+    return raw as EntitlementStatus
+  }
+  return "none"
+}
+
+function isExpired(expiresAt: string | null, now = new Date()): boolean {
+  if (expiresAt === null) return false
+  const parsed = Date.parse(expiresAt)
+  if (Number.isNaN(parsed)) return false
+  return parsed <= now.getTime()
+}
+
+function toEntitlementView(row: EntitlementRow | null): EntitlementView {
+  if (row === null) return NONE_VIEW
+  return {
+    status: normalizeStatus(row.status),
+    productId: row.product_id,
+    expiresAt: row.expires_at,
+    trialEndsAt: row.trial_ends_at,
+  }
+}
+
+/** Reads use user JWT so RLS `select own` applies (defense in depth). */
+async function readEntitlementRow(params: {
+  userId: string
+  accessToken: string
+}): Promise<EntitlementRow | null> {
+  const client = createSupabaseUserClient(params.accessToken)
+  const { data, error } = await client
+    .from("user_entitlements")
+    .select(ENTITLEMENT_COLUMNS)
+    .eq("user_id", params.userId)
+    .maybeSingle<EntitlementRow>()
+
+  if (error !== null) {
+    throw new Error(`read entitlement failed: ${error.message}`)
+  }
+  return data
+}
+
+/**
+ * Idempotent: upsert with `ignoreDuplicates` avoids races between concurrent
+ * `/me` calls. Re-reads the row when the insert was skipped.
+ */
+async function ensureNoneEntitlementRow(params: {
+  userId: string
+  accessToken: string
+}): Promise<EntitlementRow> {
+  const adminClient = getSupabaseServiceRole()
+  const { data, error } = await adminClient
+    .from("user_entitlements")
+    .upsert(
+      { user_id: params.userId, status: "none" },
+      { onConflict: "user_id", ignoreDuplicates: true },
+    )
+    .select(ENTITLEMENT_COLUMNS)
+    .maybeSingle<EntitlementRow>()
+
+  if (error !== null) {
+    throw new Error(`ensure none entitlement failed: ${error.message}`)
+  }
+  if (data !== null) return data
+
+  const existing = await readEntitlementRow(params)
+  if (existing === null) {
+    throw new Error("ensure none entitlement: row missing after upsert")
+  }
+  return existing
+}
+
+async function markExpired(params: {
+  userId: string
+}): Promise<EntitlementRow> {
+  const adminClient = getSupabaseServiceRole()
+  const { data, error } = await adminClient
+    .from("user_entitlements")
+    .update({ status: "expired" })
+    .eq("user_id", params.userId)
+    .select(ENTITLEMENT_COLUMNS)
+    .single<EntitlementRow>()
+
+  if (error !== null) {
+    throw new Error(`mark entitlement expired failed: ${error.message}`)
+  }
+  return data
+}
+
+export async function resolveEntitlement(params: {
+  userId: string
+  accessToken: string
+  createIfMissing?: boolean
+}): Promise<EntitlementView> {
+  const createIfMissing = params.createIfMissing ?? false
+  let row = await readEntitlementRow(params)
+
+  if (row === null && createIfMissing) {
+    row = await ensureNoneEntitlementRow(params)
+  }
+
+  if (row === null) return NONE_VIEW
+
+  const status = normalizeStatus(row.status)
+  if ((status === "trial" || status === "active") && isExpired(row.expires_at)) {
+    const expired = await markExpired({ userId: params.userId })
+    return toEntitlementView(expired)
+  }
+
+  return toEntitlementView(row)
+}
+
+/** Used as a fail-closed default when entitlement read fails (DB outage etc). */
+export const NONE_ENTITLEMENT: EntitlementView = NONE_VIEW
