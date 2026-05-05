@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
+import "../scripts/bootstrap-env.js"
 import { Hono } from "hono"
 import { agentRoute } from "../src/routes/agent.js"
 import { billingRoute } from "../src/routes/billing.js"

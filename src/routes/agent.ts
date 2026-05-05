@@ -102,8 +102,8 @@ function summaryUserPrompt(
 
 export const agentRoute = new Hono<AuthEnv>()
 
-agentRoute.use("*", authMiddleware)
-agentRoute.use("*", requireEntitlementMiddleware)
+agentRoute.use("/agent/*", authMiddleware)
+agentRoute.use("/agent/*", requireEntitlementMiddleware)
 
 agentRoute.post("/agent/schedule", async (c) => {
   let body: unknown
