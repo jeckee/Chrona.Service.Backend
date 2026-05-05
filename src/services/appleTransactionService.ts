@@ -230,6 +230,14 @@ export async function verifyAppleSignedTransaction(params: {
     ? payload.appAccountToken.trim().toLowerCase()
     : null
   if (actualToken === null || actualToken !== expectedToken) {
+    console.warn("[apple-transaction] appAccountToken mismatch", {
+      transactionId: payload.transactionId,
+      originalTransactionId: payload.originalTransactionId,
+      environment: payload.environment,
+      productId: payload.productId,
+      expectedAppAccountToken: expectedToken,
+      actualAppAccountToken: actualToken ?? "(missing or empty)",
+    })
     throw new AppleTransactionVerificationError(
       "appAccountToken does not match authenticated user",
     )
