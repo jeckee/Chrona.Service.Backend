@@ -2,8 +2,6 @@ import type { Context } from "hono"
 import { Hono } from "hono"
 import { authMiddleware, type AuthEnv } from "../middleware/auth.js"
 import { callLLM } from "../services/openrouter.js"
-import { ensureUserProfile } from "../services/userService.js"
-import { recordAgentUsage } from "../services/usageLogService.js"
 import type {
   SchedulingRequest,
   SchedulingResponse,
@@ -106,9 +104,6 @@ export const agentRoute = new Hono<AuthEnv>()
 agentRoute.use("*", authMiddleware)
 
 agentRoute.post("/agent/schedule", async (c) => {
-  const user = c.get("user")
-  const accessToken = c.get("accessToken")
-
   let body: unknown
   try {
     body = await c.req.json()
@@ -122,17 +117,6 @@ agentRoute.post("/agent/schedule", async (c) => {
   }
   const scheduleRequest = parsed as SchedulingRequest
 
-  try {
-    await ensureUserProfile({
-      userId: user.id,
-      email: user.email,
-      accessToken,
-    })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    return c.json({ error: "Internal Server Error", message }, 500)
-  }
-
   let fullPrompt: string
   try {
     const { system, template } = loadPrompt("scheduling")
@@ -143,74 +127,17 @@ agentRoute.post("/agent/schedule", async (c) => {
     return jsonAiRequestFailed(c, message)
   }
 
-  let llm
   try {
-    llm = await callLLM(fullPrompt, { responseFormat: "json" })
+    const llm = await callLLM(fullPrompt, { responseFormat: "json" })
+    const result = JSON.parse(llm.content) as SchedulingResponse
+    return c.json(result)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    await recordAgentUsage({
-      userId: user.id,
-      accessToken,
-      feature: "schedule",
-      model: null,
-      inputChars: fullPrompt.length,
-      outputChars: null,
-      inputTokens: null,
-      outputTokens: null,
-      estimatedCost: null,
-      success: false,
-      errorCode: null,
-      errorMessage: message,
-    })
     return jsonAiRequestFailed(c, message)
-  }
-
-  try {
-    const result = JSON.parse(llm.content) as SchedulingResponse
-    await recordAgentUsage({
-      userId: user.id,
-      accessToken,
-      feature: "schedule",
-      model: llm.model,
-      inputChars: llm.inputChars,
-      outputChars: llm.outputChars,
-      inputTokens: llm.inputTokens,
-      outputTokens: llm.outputTokens,
-      estimatedCost: llm.estimatedCost,
-      success: true,
-      errorCode: null,
-      errorMessage: null,
-    })
-    return c.json(result)
-  } catch {
-    await recordAgentUsage({
-      userId: user.id,
-      accessToken,
-      feature: "schedule",
-      model: llm.model,
-      inputChars: llm.inputChars,
-      outputChars: llm.outputChars,
-      inputTokens: llm.inputTokens,
-      outputTokens: llm.outputTokens,
-      estimatedCost: llm.estimatedCost,
-      success: false,
-      errorCode: "PARSE_ERROR",
-      errorMessage: "Invalid JSON from model",
-    })
-    return c.json(
-      {
-        error: "AI Response Parse Failed",
-        message: "Invalid JSON from model",
-      },
-      502,
-    )
   }
 })
 
 agentRoute.post("/agent/summary", async (c) => {
-  const user = c.get("user")
-  const accessToken = c.get("accessToken")
-
   let body: unknown
   try {
     body = await c.req.json()
@@ -224,17 +151,6 @@ agentRoute.post("/agent/summary", async (c) => {
   }
   const summaryRequest = parsed as SummaryRequest
 
-  try {
-    await ensureUserProfile({
-      userId: user.id,
-      email: user.email,
-      accessToken,
-    })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    return c.json({ error: "Internal Server Error", message }, 500)
-  }
-
   let fullPrompt: string
   try {
     const { system, template } = loadPrompt("summary")
@@ -247,37 +163,9 @@ agentRoute.post("/agent/summary", async (c) => {
 
   try {
     const llm = await callLLM(fullPrompt, { responseFormat: "text" })
-    await recordAgentUsage({
-      userId: user.id,
-      accessToken,
-      feature: "summary",
-      model: llm.model,
-      inputChars: llm.inputChars,
-      outputChars: llm.outputChars,
-      inputTokens: llm.inputTokens,
-      outputTokens: llm.outputTokens,
-      estimatedCost: llm.estimatedCost,
-      success: true,
-      errorCode: null,
-      errorMessage: null,
-    })
     return c.json({ text: llm.content })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    await recordAgentUsage({
-      userId: user.id,
-      accessToken,
-      feature: "summary",
-      model: null,
-      inputChars: fullPrompt.length,
-      outputChars: null,
-      inputTokens: null,
-      outputTokens: null,
-      estimatedCost: null,
-      success: false,
-      errorCode: null,
-      errorMessage: message,
-    })
     return jsonAiRequestFailed(c, message)
   }
 })
