@@ -9,6 +9,7 @@ create table if not exists public.user_entitlements (
   product_id text,
   original_transaction_id text,
   latest_transaction_id text,
+  environment text,
   expires_at timestamptz,
   trial_ends_at timestamptz,
   created_at timestamptz not null default now(),

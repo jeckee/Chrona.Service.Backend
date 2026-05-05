@@ -1,40 +1,36 @@
 import type { Context } from "hono"
 import { Hono } from "hono"
 import { authMiddleware, type AuthEnv } from "../middleware/auth.js"
+import {
+  AppleTransactionVerificationError,
+  verifyAppleSignedTransaction,
+  type VerifiedAppleTransaction,
+} from "../services/appleTransactionService.js"
+import { upsertVerifiedEntitlement } from "../services/entitlementService.js"
+import { ensureUserProfile } from "../services/userService.js"
 
 type VerifyAppleRequest = {
-  productId?: unknown
-  transactionId?: unknown
-  signedTransactionInfo?: unknown
-  appAccountToken?: unknown
-}
-
-type RestoreAppleRequest = {
-  transactions?: unknown
+  signedTransaction: string
 }
 
 function jsonBadRequest(c: Context, message: string) {
   return c.json({ error: "Bad Request", message }, 400)
 }
 
-function jsonNotImplemented(c: Context, message: string) {
+function jsonInvalidTransaction(c: Context) {
   return c.json(
     {
       error: {
-        code: "NOT_IMPLEMENTED",
-        message,
+        code: "INVALID_TRANSACTION",
+        message: "Invalid Apple transaction",
       },
     },
-    501,
+    400,
   )
 }
 
-function isString(v: unknown): v is string {
-  return typeof v === "string"
-}
-
-function isOptionalNonEmptyString(v: unknown): boolean {
-  return v === undefined || (typeof v === "string" && v.trim() !== "")
+function jsonInternalError(c: Context, message: string) {
+  return c.json({ error: "Internal Server Error", message }, 500)
 }
 
 function validateVerifyBody(
@@ -43,53 +39,21 @@ function validateVerifyBody(
   if (body === null || typeof body !== "object") {
     return { error: "Body must be a JSON object." }
   }
-  const o = body as VerifyAppleRequest
-
-  if (!isOptionalNonEmptyString(o.productId)) {
-    return { error: "productId must be a non-empty string when provided." }
+  const o = body as { signedTransaction?: unknown }
+  if (
+    typeof o.signedTransaction !== "string" ||
+    o.signedTransaction.trim() === ""
+  ) {
+    return { error: "signedTransaction must be a non-empty string." }
   }
-  if (!isOptionalNonEmptyString(o.transactionId)) {
-    return { error: "transactionId must be a non-empty string when provided." }
-  }
-  if (!isOptionalNonEmptyString(o.signedTransactionInfo)) {
-    return {
-      error: "signedTransactionInfo must be a non-empty string when provided.",
-    }
-  }
-  if (!isOptionalNonEmptyString(o.appAccountToken)) {
-    return { error: "appAccountToken must be a non-empty string when provided." }
-  }
-
-  // Skeleton阶段至少要求一种transaction信息，避免空调用。
-  const hasTxInfo =
-    isString(o.transactionId) || isString(o.signedTransactionInfo)
-  if (!hasTxInfo) {
-    return {
-      error:
-        "Either transactionId or signedTransactionInfo is required for verify.",
-    }
-  }
-  return o
-}
-
-function validateRestoreBody(
-  body: unknown,
-): RestoreAppleRequest | { error: string } {
-  if (body === null || typeof body !== "object") {
-    return { error: "Body must be a JSON object." }
-  }
-  const o = body as RestoreAppleRequest
-  if (o.transactions !== undefined && !Array.isArray(o.transactions)) {
-    return { error: "transactions must be an array when provided." }
-  }
-  return o
+  return { signedTransaction: o.signedTransaction }
 }
 
 export const billingRoute = new Hono<AuthEnv>()
 
 billingRoute.use("*", authMiddleware)
 
-billingRoute.post("/billing/apple/verify", async (c) => {
+billingRoute.post("/subscriptions/verify", async (c) => {
   let body: unknown
   try {
     body = await c.req.json()
@@ -102,27 +66,45 @@ billingRoute.post("/billing/apple/verify", async (c) => {
     return jsonBadRequest(c, parsed.error)
   }
 
-  return jsonNotImplemented(
-    c,
-    "Apple subscription verify is not implemented yet. Keep calling /api/v1/me to refresh entitlement state.",
-  )
-})
+  const user = c.get("user")
+  const accessToken = c.get("accessToken")
 
-billingRoute.post("/billing/apple/restore", async (c) => {
-  let body: unknown
+  let tx: VerifiedAppleTransaction
   try {
-    body = await c.req.json()
-  } catch {
-    return jsonBadRequest(c, "Invalid JSON body.")
+    tx = await verifyAppleSignedTransaction({
+      signedTransaction: parsed.signedTransaction,
+      expectedAppAccountToken: user.id,
+    })
+  } catch (e) {
+    if (e instanceof AppleTransactionVerificationError) {
+      console.warn("[subscriptions/verify] reject:", e.message)
+      return jsonInvalidTransaction(c)
+    }
+    const message = e instanceof Error ? e.message : String(e)
+    console.error("[subscriptions/verify] verifier error:", message)
+    return jsonInternalError(c, "Subscription verifier unavailable.")
   }
 
-  const parsed = validateRestoreBody(body)
-  if ("error" in parsed) {
-    return jsonBadRequest(c, parsed.error)
+  try {
+    await ensureUserProfile({
+      userId: user.id,
+      email: user.email,
+      accessToken,
+    })
+    const entitlement = await upsertVerifiedEntitlement({
+      userId: user.id,
+      status: tx.status,
+      productId: tx.productId,
+      originalTransactionId: tx.originalTransactionId,
+      latestTransactionId: tx.transactionId,
+      environment: tx.environment,
+      expiresAt: tx.expiresDate,
+      trialEndsAt: tx.trialEndsAt,
+    })
+    return c.json({ entitlement }, 200)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error("[subscriptions/verify] persistence failed:", message)
+    return jsonInternalError(c, "Failed to persist entitlement.")
   }
-
-  return jsonNotImplemented(
-    c,
-    "Apple restore is not implemented yet. Keep calling /api/v1/me to refresh entitlement state.",
-  )
 })

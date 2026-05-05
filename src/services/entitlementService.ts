@@ -16,6 +16,9 @@ type EntitlementRow = {
   user_id: string
   status: string
   product_id: string | null
+  original_transaction_id?: string | null
+  latest_transaction_id?: string | null
+  environment?: string | null
   expires_at: string | null
   trial_ends_at: string | null
 }
@@ -49,6 +52,17 @@ function isExpired(expiresAt: string | null, now = new Date()): boolean {
   const parsed = Date.parse(expiresAt)
   if (Number.isNaN(parsed)) return false
   return parsed <= now.getTime()
+}
+
+function shouldTransitionToExpired(row: EntitlementRow): boolean {
+  const status = normalizeStatus(row.status)
+  if (status === "trial") {
+    return isExpired(row.trial_ends_at)
+  }
+  if (status === "active") {
+    return isExpired(row.expires_at)
+  }
+  return false
 }
 
 function toEntitlementView(row: EntitlementRow | null): EntitlementView {
@@ -140,8 +154,7 @@ export async function resolveEntitlement(params: {
 
   if (row === null) return NONE_VIEW
 
-  const status = normalizeStatus(row.status)
-  if ((status === "trial" || status === "active") && isExpired(row.expires_at)) {
+  if (shouldTransitionToExpired(row)) {
     const expired = await markExpired({ userId: params.userId })
     return toEntitlementView(expired)
   }
@@ -151,3 +164,42 @@ export async function resolveEntitlement(params: {
 
 /** Used as a fail-closed default when entitlement read fails (DB outage etc). */
 export const NONE_ENTITLEMENT: EntitlementView = NONE_VIEW
+
+export type UpsertEntitlementInput = {
+  userId: string
+  status: Exclude<EntitlementStatus, "none">
+  productId: string
+  originalTransactionId: string
+  latestTransactionId: string
+  environment: string
+  expiresAt: string | null
+  trialEndsAt: string | null
+}
+
+export async function upsertVerifiedEntitlement(
+  input: UpsertEntitlementInput,
+): Promise<EntitlementView> {
+  const adminClient = getSupabaseServiceRole()
+  const { data, error } = await adminClient
+    .from("user_entitlements")
+    .upsert(
+      {
+        user_id: input.userId,
+        status: input.status,
+        product_id: input.productId,
+        original_transaction_id: input.originalTransactionId,
+        latest_transaction_id: input.latestTransactionId,
+        environment: input.environment,
+        expires_at: input.expiresAt,
+        trial_ends_at: input.trialEndsAt,
+      },
+      { onConflict: "user_id" },
+    )
+    .select(ENTITLEMENT_COLUMNS)
+    .single<EntitlementRow>()
+
+  if (error !== null) {
+    throw new Error(`upsert verified entitlement failed: ${error.message}`)
+  }
+  return toEntitlementView(data)
+}

@@ -5,7 +5,7 @@
   ],
   "functions": {
     "api/index.ts": {
-      "includeFiles": "src/prompts/**"
+      "includeFiles": "{src/prompts/**,certs/**}"
     }
   }
 }

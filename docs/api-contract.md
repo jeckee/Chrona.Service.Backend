@@ -33,67 +33,92 @@ Returns authenticated user profile and entitlement status.
 
 ---
 
-## POST `/billing/apple/verify`
+## POST `/subscriptions/verify`
 
-Apple subscription verification endpoint skeleton (authenticated).  
-Current phase is placeholder-only for macOS integration and does **not** validate StoreKit with Apple yet.
+Server-authoritative Apple subscription verification (authenticated).  
+Client sends only StoreKit 2 `transaction.jwsRepresentation` in `signedTransaction`.
 
-### Request JSON
+### Server-authoritative invariants
 
-At least one of `transactionId` or `signedTransactionInfo` is required.
+The server is the only source of truth for `entitlement.status`. Clients MUST NOT
+attempt to set or echo `status`, `productId`, `expiresAt`, or `trialEndsAt`.
 
-```json
-{
-  "productId": "chrona.pro.monthly",
-  "transactionId": "2000000123456789",
-  "signedTransactionInfo": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "appAccountToken": "supabase-user-id"
-}
-```
+JWS verification anchors the certificate chain to Apple Root CA (G3 + Inc Root)
+via `@apple/app-store-server-library`. Server enforces, in this order:
 
-### Response JSON (501)
+1. JWS signature + Apple Root CA chain
+2. `bundleId` matches `APPLE_BUNDLE_ID`
+3. `environment` is one of `APPLE_ALLOWED_ENVIRONMENTS`
+4. `productId` is in `APPLE_ALLOWED_PRODUCT_IDS`
+5. `appAccountToken` (UUID, set by macOS at purchase via `Product.PurchaseOption.appAccountToken`) equals the authenticated Supabase user id
 
-```json
-{
-  "error": {
-    "code": "NOT_IMPLEMENTED",
-    "message": "Apple subscription verify is not implemented yet. Keep calling /api/v1/me to refresh entitlement state."
-  }
-}
-```
+Status mapping:
 
----
-
-## POST `/billing/apple/restore`
-
-Apple restore endpoint skeleton (authenticated).  
-Current phase is placeholder-only for macOS integration and does **not** validate StoreKit with Apple yet.
+- `revocationDate` present → `expired`
+- `expiresDate` missing or in the past → `expired`
+- `offerDiscountType === "FREE_TRIAL"` and not expired → `trial`
+- otherwise not expired → `active`
 
 ### Request JSON
 
 ```json
 {
-  "transactions": [
-    {
-      "transactionId": "2000000123456789",
-      "signedTransactionInfo": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9..."
-    }
-  ]
+  "signedTransaction": "eyJhbGciOiJFUzI1NiIsIng1YyI6WyJNSUl..."
 }
 ```
 
-`transactions` is optional in this placeholder stage.
+### Response JSON (200)
 
-### Response JSON (501)
+```json
+{
+  "entitlement": {
+    "status": "trial",
+    "productId": "cc.chrona.pro.monthly",
+    "expiresAt": "2026-05-20T00:00:00.000Z",
+    "trialEndsAt": "2026-05-20T00:00:00.000Z"
+  }
+}
+```
+
+### Invalid transaction (400)
+
+Returned for any client-attributable failure: bad JWS, wrong chain, unknown
+bundleId/productId/environment, missing or mismatched `appAccountToken`.
 
 ```json
 {
   "error": {
-    "code": "NOT_IMPLEMENTED",
-    "message": "Apple restore is not implemented yet. Keep calling /api/v1/me to refresh entitlement state."
+    "code": "INVALID_TRANSACTION",
+    "message": "Invalid Apple transaction"
   }
 }
 ```
+
+### Internal error (500)
+
+Returned for server-side faults (DB unavailable, certs missing, etc.). Clients
+should retry with backoff rather than treating this as a terminal payment failure.
+
+```json
+{
+  "error": "Internal Server Error",
+  "message": "Failed to persist entitlement."
+}
+```
+
+### Required environment variables
+
+| Name | Purpose |
+| --- | --- |
+| `APPLE_BUNDLE_ID` | Single bundle id the JWS must match (e.g. `cc.chrona.mac`). |
+| `APPLE_APP_APPLE_ID` | Numeric Apple app id; **required** when `Production` is in `APPLE_ALLOWED_ENVIRONMENTS`. |
+| `APPLE_ALLOWED_ENVIRONMENTS` | CSV of `Production`, `Sandbox`, `Xcode`, `LocalTesting`. |
+| `APPLE_ALLOWED_PRODUCT_IDS` | CSV of product ids accepted by the server. |
+| `APPLE_ROOT_CERTS_DIR` | (optional) Override path to directory containing `AppleRootCA-G3.cer` and `AppleIncRootCertificate.cer`. Defaults to `<cwd>/certs`. |
+| `APPLE_ENABLE_ONLINE_CHECKS` | (optional) `true` to enable OCSP + current-time cert expiry. Default `false`. |
+
+Apple root certificates ship in repo under `certs/` and are bundled into the
+function via `vercel.json` `includeFiles`.
 
 ---
 
