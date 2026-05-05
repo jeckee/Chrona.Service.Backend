@@ -1,11 +1,13 @@
 /**
  * Smoke test via Hono app.fetch() (no Vercel CLI).
  * Requires: SUPABASE_URL, SUPABASE_ANON_KEY (see src/lib/supabase.ts).
+ * Optional: `.env.local` is loaded automatically when present.
  *
  * Authenticated scenarios: set CHRONA_SMOKE_BEARER to a Supabase access_token.
  *
  * Run: npx tsx scripts/smoke-app-fetch.ts
  */
+import "./bootstrap-env.js"
 import { app } from "../src/app.js"
 
 const smokeBearer = process.env.CHRONA_SMOKE_BEARER

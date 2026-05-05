@@ -10,6 +10,7 @@ export type AuthUser = {
 export type AuthEnv = {
   Variables: {
     user: AuthUser
+    accessToken: string
   }
 }
 
@@ -94,5 +95,6 @@ export const authMiddleware: MiddlewareHandler<AuthEnv> = async (c, next) => {
     id: user.id,
     email: user.email ?? null,
   })
+  c.set("accessToken", token)
   await next()
 }

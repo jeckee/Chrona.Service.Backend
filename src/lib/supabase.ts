@@ -23,3 +23,21 @@ export function getSupabase(): SupabaseClient {
   })
   return cached
 }
+
+/** Per-request client: anon key + user JWT so Postgres RLS sees auth.uid(). */
+export function createSupabaseUserClient(accessToken: string): SupabaseClient {
+  const url = requireEnv("SUPABASE_URL")
+  const key = requireEnv("SUPABASE_ANON_KEY")
+  return createClient(url, key, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  })
+}

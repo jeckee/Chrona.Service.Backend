@@ -9,6 +9,7 @@
   "scripts": {
     "start": "vercel dev",
     "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run smoke",
     "smoke": "npx tsx scripts/smoke-app-fetch.ts",
     "deploy": "vercel deploy --prod"
   },
