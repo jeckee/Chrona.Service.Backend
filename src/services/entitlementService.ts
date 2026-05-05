@@ -171,32 +171,52 @@ export type UpsertEntitlementInput = {
   productId: string
   originalTransactionId: string
   latestTransactionId: string
-  environment: string
+  environment?: string
   expiresAt: string | null
   trialEndsAt: string | null
+}
+
+function isMissingEnvironmentColumnError(message: string): boolean {
+  return (
+    message.includes("Could not find the 'environment' column") &&
+    message.includes("user_entitlements")
+  )
 }
 
 export async function upsertVerifiedEntitlement(
   input: UpsertEntitlementInput,
 ): Promise<EntitlementView> {
   const adminClient = getSupabaseServiceRole()
-  const { data, error } = await adminClient
+  const basePayload = {
+    user_id: input.userId,
+    status: input.status,
+    product_id: input.productId,
+    original_transaction_id: input.originalTransactionId,
+    latest_transaction_id: input.latestTransactionId,
+    expires_at: input.expiresAt,
+    trial_ends_at: input.trialEndsAt,
+  }
+  const withEnvironmentPayload = {
+    ...basePayload,
+    environment: input.environment ?? null,
+  }
+
+  let { data, error } = await adminClient
     .from("user_entitlements")
-    .upsert(
-      {
-        user_id: input.userId,
-        status: input.status,
-        product_id: input.productId,
-        original_transaction_id: input.originalTransactionId,
-        latest_transaction_id: input.latestTransactionId,
-        environment: input.environment,
-        expires_at: input.expiresAt,
-        trial_ends_at: input.trialEndsAt,
-      },
-      { onConflict: "user_id" },
-    )
+    .upsert(withEnvironmentPayload, { onConflict: "user_id" })
     .select(ENTITLEMENT_COLUMNS)
     .single<EntitlementRow>()
+
+  if (
+    error !== null &&
+    isMissingEnvironmentColumnError(error.message)
+  ) {
+    ;({ data, error } = await adminClient
+      .from("user_entitlements")
+      .upsert(basePayload, { onConflict: "user_id" })
+      .select(ENTITLEMENT_COLUMNS)
+      .single<EntitlementRow>())
+  }
 
   if (error !== null) {
     throw new Error(`upsert verified entitlement failed: ${error.message}`)
