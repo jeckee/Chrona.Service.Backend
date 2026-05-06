@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import "../scripts/bootstrap-env.js"
 import { Hono } from "hono"
 import { agentRoute } from "../src/routes/agent.js"
+import { appleRoute } from "../src/routes/apple.js"
 import { billingRoute } from "../src/routes/billing.js"
 import { healthRoute } from "../src/routes/health.js"
 import { meRoute } from "../src/routes/me.js"
@@ -12,6 +13,7 @@ app.route("/", healthRoute)
 app.route("/", meRoute)
 app.route("/", agentRoute)
 app.route("/", billingRoute)
+app.route("/", appleRoute)
 
 app.notFound((c) =>
   c.json({ ok: false, error: "not_found", path: c.req.path }, 404),

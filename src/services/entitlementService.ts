@@ -258,3 +258,76 @@ export async function upsertVerifiedEntitlement(
   )
   return toEntitlementView(data)
 }
+
+/**
+ * Server-authoritative entitlement upsert driven by Apple Server Notifications.
+ * `updated_at` is maintained by the `user_entitlements_set_updated_at` trigger.
+ * Falls back to a payload without the `environment` column on older databases
+ * to mirror `upsertVerifiedEntitlement` and avoid PGRST204 churn.
+ */
+export async function upsertUserEntitlementFromApple(params: {
+  userId: string
+  status: "trial" | "active" | "expired"
+  productId?: string | null
+  originalTransactionId?: string | null
+  latestTransactionId?: string | null
+  environment?: string | null
+  expiresAt?: string | null
+  trialEndsAt?: string | null
+}): Promise<void> {
+  const adminClient = getSupabaseServiceRole()
+  const basePayload = {
+    user_id: params.userId,
+    status: params.status,
+    product_id: params.productId ?? null,
+    original_transaction_id: params.originalTransactionId ?? null,
+    latest_transaction_id: params.latestTransactionId ?? null,
+    expires_at: params.expiresAt ?? null,
+    trial_ends_at: params.trialEndsAt ?? null,
+  }
+  const withEnvironmentPayload = {
+    ...basePayload,
+    environment: params.environment ?? null,
+  }
+
+  let { error } = await adminClient
+    .from("user_entitlements")
+    .upsert(withEnvironmentPayload, { onConflict: "user_id" })
+
+  if (error !== null && isMissingEnvironmentColumnError(error.message)) {
+    ;({ error } = await adminClient
+      .from("user_entitlements")
+      .upsert(basePayload, { onConflict: "user_id" }))
+  }
+
+  if (error !== null) {
+    throw new Error(`upsert entitlement from Apple failed: ${error.message}`)
+  }
+}
+
+export async function updateUserEntitlementProductFromApple(params: {
+  userId: string
+  productId: string
+  latestTransactionId?: string | null
+  expiresAt?: string | null
+}): Promise<void> {
+  const adminClient = getSupabaseServiceRole()
+  const updates: Record<string, string | null> = {
+    product_id: params.productId,
+  }
+  if (params.latestTransactionId !== undefined) {
+    updates.latest_transaction_id = params.latestTransactionId
+  }
+  if (params.expiresAt !== undefined) {
+    updates.expires_at = params.expiresAt
+  }
+
+  const { error } = await adminClient
+    .from("user_entitlements")
+    .update(updates)
+    .eq("user_id", params.userId)
+
+  if (error !== null) {
+    throw new Error(`update entitlement product from Apple failed: ${error.message}`)
+  }
+}
