@@ -67,7 +67,15 @@ function appleRejectDetails(e: Error): Record<string, unknown> | undefined {
 
 export const billingRoute = new Hono<AuthEnv>()
 
-billingRoute.use("*", authMiddleware)
+billingRoute.use("*", async (c, next) => {
+  // Mounted at app root; exclude Apple server-to-server webhooks from auth.
+  const path = c.req.path
+  if (path.startsWith("/apple/") || path.startsWith("/api/v1/apple/")) {
+    await next()
+    return
+  }
+  return authMiddleware(c, next)
+})
 
 billingRoute.post("/subscriptions/verify", async (c) => {
   let body: unknown

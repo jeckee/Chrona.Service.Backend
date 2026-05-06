@@ -9,7 +9,7 @@ import { ensureUserProfile } from "../services/userService.js"
 
 export const meRoute = new Hono<AuthEnv>()
 
-meRoute.use(authMiddleware)
+meRoute.use("/me", authMiddleware)
 
 meRoute.get("/me", async (c) => {
   const user = c.get("user")
