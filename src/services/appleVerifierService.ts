@@ -25,8 +25,13 @@ function parseEnvironment(raw: string): Environment {
 }
 
 function parseAppAppleId(raw: string | undefined, env: Environment): number | undefined {
-  if (env === Environment.SANDBOX) {
+  if (env !== Environment.PRODUCTION) {
     if (raw === undefined || raw.trim() === "") return undefined
+    const parsed = Number(raw.trim())
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error("APPLE_APP_APPLE_ID must be a positive integer string")
+    }
+    return parsed
   }
   if (raw === undefined || raw.trim() === "") {
     throw new Error("Missing required environment variable: APPLE_APP_APPLE_ID")
@@ -36,6 +41,57 @@ function parseAppAppleId(raw: string | undefined, env: Environment): number | un
     throw new Error("APPLE_APP_APPLE_ID must be a positive integer string")
   }
   return parsed
+}
+
+/** Same names as `appleTransactionService` / App Store Server Library. */
+const ENVIRONMENT_BY_ALLOWED_NAME: Record<string, Environment> = {
+  Production: Environment.PRODUCTION,
+  Sandbox: Environment.SANDBOX,
+  Xcode: Environment.XCODE,
+  LocalTesting: Environment.LOCAL_TESTING,
+}
+
+function parseAppleAllowedEnvironmentsCsv(raw: string): Environment[] {
+  const names = raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => v !== "")
+  const out: Environment[] = []
+  for (const name of names) {
+    const env = ENVIRONMENT_BY_ALLOWED_NAME[name]
+    if (env === undefined) {
+      throw new Error(
+        `Unrecognized APPLE_ALLOWED_ENVIRONMENTS entry: ${name}. ` +
+          "Expected one of Production, Sandbox, Xcode, LocalTesting.",
+      )
+    }
+    out.push(env)
+  }
+  if (out.length === 0) {
+    throw new Error("APPLE_ALLOWED_ENVIRONMENTS has no valid values")
+  }
+  return out
+}
+
+function verifierTryOrder(environments: Environment[]): Environment[] {
+  return [
+    ...environments.filter((e) => e === Environment.PRODUCTION),
+    ...environments.filter((e) => e !== Environment.PRODUCTION),
+  ]
+}
+
+function buildAppleSignedDataVerifier(env: Environment): SignedDataVerifier {
+  const bundleId = requireEnv("APPLE_BUNDLE_ID")
+  const appAppleId = parseAppAppleId(process.env.APPLE_APP_APPLE_ID, env)
+  const rootCertificates = loadRootCertificates()
+  const enableOnlineChecks = parseBoolEnv("APPLE_ENABLE_ONLINE_CHECKS", false)
+  return new SignedDataVerifier(
+    rootCertificates,
+    enableOnlineChecks,
+    env,
+    bundleId,
+    appAppleId,
+  )
 }
 
 const PEM_BLOCK_REGEX = /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/g
@@ -102,17 +158,30 @@ function loadRootCertificates(): Buffer[] {
 }
 
 export function createAppleSignedDataVerifier(): SignedDataVerifier {
-  const bundleId = requireEnv("APPLE_BUNDLE_ID")
-  const env = parseEnvironment(requireEnv("APPLE_ENVIRONMENT"))
-  const appAppleId = parseAppAppleId(process.env.APPLE_APP_APPLE_ID, env)
-  const rootCertificates = loadRootCertificates()
-  const enableOnlineChecks = parseBoolEnv("APPLE_ENABLE_ONLINE_CHECKS", false)
+  return buildAppleSignedDataVerifier(parseEnvironment(requireEnv("APPLE_ENVIRONMENT")))
+}
 
-  return new SignedDataVerifier(
-    rootCertificates,
-    enableOnlineChecks,
-    env,
-    bundleId,
-    appAppleId,
-  )
+let notificationVerifiersCache: SignedDataVerifier[] | null = null
+
+/**
+ * Verifiers for App Store Server Notifications. When `APPLE_ALLOWED_ENVIRONMENTS`
+ * is set (same CSV as client transaction verification), builds one verifier per
+ * entry — Production first, then others — so one deployment accepts both
+ * sandbox and production notifications. If unset, falls back to
+ * {@link createAppleSignedDataVerifier} (`APPLE_ENVIRONMENT` required).
+ */
+export function getAppleNotificationVerifiers(): SignedDataVerifier[] {
+  if (notificationVerifiersCache !== null) return notificationVerifiersCache
+
+  const allowedCsv = process.env.APPLE_ALLOWED_ENVIRONMENTS?.trim()
+  let result: SignedDataVerifier[]
+  if (allowedCsv !== undefined && allowedCsv !== "") {
+    const envs = verifierTryOrder(parseAppleAllowedEnvironmentsCsv(allowedCsv))
+    result = envs.map((e) => buildAppleSignedDataVerifier(e))
+  } else {
+    result = [createAppleSignedDataVerifier()]
+  }
+
+  notificationVerifiersCache = result
+  return result
 }

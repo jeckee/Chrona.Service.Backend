@@ -1,16 +1,18 @@
 import {
   OfferDiscountType,
   VerificationException,
+  VerificationStatus,
   type JWSRenewalInfoDecodedPayload,
   type JWSTransactionDecodedPayload,
   type ResponseBodyV2DecodedPayload,
+  type SignedDataVerifier,
 } from "@apple/app-store-server-library"
 import { getSupabaseServiceRole } from "../lib/supabase.js"
 import {
   updateUserEntitlementProductFromApple,
   upsertUserEntitlementFromApple,
 } from "./entitlementService.js"
-import { createAppleSignedDataVerifier } from "./appleVerifierService.js"
+import { getAppleNotificationVerifiers } from "./appleVerifierService.js"
 
 type ProcessStatus = "processed" | "ignored" | "duplicate" | "failed"
 
@@ -115,20 +117,49 @@ export async function processAppleNotification(signedPayload: string): Promise<{
   status: ProcessStatus
   notificationUUID?: string
 }> {
-  const verifier = createAppleSignedDataVerifier()
-  let decodedNotification: ResponseBodyV2DecodedPayload
-  try {
-    decodedNotification = await verifier.verifyAndDecodeNotification(signedPayload)
-  } catch (error) {
+  const verifiers = getAppleNotificationVerifiers()
+  let decodedNotification: ResponseBodyV2DecodedPayload | undefined
+  let verifier: SignedDataVerifier | undefined
+  let lastEnvMismatch: VerificationException | null = null
+
+  for (const v of verifiers) {
+    try {
+      decodedNotification = await v.verifyAndDecodeNotification(signedPayload)
+      verifier = v
+      break
+    } catch (error) {
+      if (
+        error instanceof VerificationException &&
+        error.status === VerificationStatus.INVALID_ENVIRONMENT
+      ) {
+        lastEnvMismatch = error
+        continue
+      }
+      await safeWriteFailureLog({
+        signedPayload,
+        message: "Notification JWS verification failed",
+      })
+      const message =
+        error instanceof VerificationException
+          ? `Notification JWS verification failed (status=${error.status})`
+          : "Notification JWS verification failed"
+      throw new InvalidAppleNotificationPayloadError(message)
+    }
+  }
+
+  if (decodedNotification === undefined || verifier === undefined) {
     await safeWriteFailureLog({
       signedPayload,
-      message: "Notification JWS verification failed",
+      message:
+        lastEnvMismatch !== null
+          ? `Notification JWS verification failed (status=${lastEnvMismatch.status})`
+          : "Notification JWS verification failed",
     })
-    const message =
-      error instanceof VerificationException
-        ? `Notification JWS verification failed (status=${error.status})`
-        : "Notification JWS verification failed"
-    throw new InvalidAppleNotificationPayloadError(message)
+    throw new InvalidAppleNotificationPayloadError(
+      lastEnvMismatch !== null
+        ? `Notification JWS verification failed (status=${lastEnvMismatch.status})`
+        : "Notification JWS verification failed",
+    )
   }
 
   const notificationUUID = asNonEmptyString(decodedNotification.notificationUUID)
@@ -226,16 +257,6 @@ export async function processAppleNotification(signedPayload: string): Promise<{
     gracePeriodExpiresDate,
     appAccountTokenExists: Boolean(appAccountToken),
   })
-
-  const expectedEnvironment = process.env.APPLE_ENVIRONMENT?.trim() ?? ""
-  if (environment !== null && expectedEnvironment !== "" && environment !== expectedEnvironment) {
-    await updateLogStatus({
-      notificationUUID,
-      status: "ignored",
-      errorMessage: `Environment mismatch: expected ${expectedEnvironment}, got ${environment}`,
-    })
-    return { status: "ignored", notificationUUID: notificationUUID ?? undefined }
-  }
 
   let userId: string | null = null
   if (appAccountToken !== null) {
