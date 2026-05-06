@@ -16,14 +16,6 @@ function parseBoolEnv(name: string, defaultValue: boolean): boolean {
   return raw.trim().toLowerCase() === "true"
 }
 
-function parseEnvironment(raw: string): Environment {
-  if (raw === "Sandbox") return Environment.SANDBOX
-  if (raw === "Production") return Environment.PRODUCTION
-  throw new Error(
-    `Invalid APPLE_ENVIRONMENT: ${raw}. Expected Sandbox or Production`,
-  )
-}
-
 function parseAppAppleId(raw: string | undefined, env: Environment): number | undefined {
   if (env !== Environment.PRODUCTION) {
     if (raw === undefined || raw.trim() === "") return undefined
@@ -157,31 +149,18 @@ function loadRootCertificates(): Buffer[] {
   return readCertificatesFromDisk()
 }
 
-export function createAppleSignedDataVerifier(): SignedDataVerifier {
-  return buildAppleSignedDataVerifier(parseEnvironment(requireEnv("APPLE_ENVIRONMENT")))
-}
-
 let notificationVerifiersCache: SignedDataVerifier[] | null = null
 
 /**
- * Verifiers for App Store Server Notifications. When `APPLE_ALLOWED_ENVIRONMENTS`
- * is set (same CSV as client transaction verification), builds one verifier per
- * entry — Production first, then others — so one deployment accepts both
- * sandbox and production notifications. If unset, falls back to
- * {@link createAppleSignedDataVerifier} (`APPLE_ENVIRONMENT` required).
+ * Verifiers for App Store Server Notifications. Uses the same required
+ * `APPLE_ALLOWED_ENVIRONMENTS` CSV as client transaction verification: one
+ * verifier per entry, Production first, then the rest.
  */
 export function getAppleNotificationVerifiers(): SignedDataVerifier[] {
   if (notificationVerifiersCache !== null) return notificationVerifiersCache
 
-  const allowedCsv = process.env.APPLE_ALLOWED_ENVIRONMENTS?.trim()
-  let result: SignedDataVerifier[]
-  if (allowedCsv !== undefined && allowedCsv !== "") {
-    const envs = verifierTryOrder(parseAppleAllowedEnvironmentsCsv(allowedCsv))
-    result = envs.map((e) => buildAppleSignedDataVerifier(e))
-  } else {
-    result = [createAppleSignedDataVerifier()]
-  }
-
-  notificationVerifiersCache = result
-  return result
+  const allowedCsv = requireEnv("APPLE_ALLOWED_ENVIRONMENTS")
+  const envs = verifierTryOrder(parseAppleAllowedEnvironmentsCsv(allowedCsv))
+  notificationVerifiersCache = envs.map((e) => buildAppleSignedDataVerifier(e))
+  return notificationVerifiersCache
 }
