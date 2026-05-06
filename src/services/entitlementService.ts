@@ -187,6 +187,34 @@ export async function upsertVerifiedEntitlement(
   input: UpsertEntitlementInput,
 ): Promise<EntitlementView> {
   const adminClient = getSupabaseServiceRole()
+  const { data: existingRow, error: existingError } = await adminClient
+    .from("user_entitlements")
+    .select(
+      "user_id, status, product_id, original_transaction_id, latest_transaction_id, environment, expires_at, trial_ends_at",
+    )
+    .eq("user_id", input.userId)
+    .maybeSingle<EntitlementRow>()
+
+  if (existingError !== null) {
+    throw new Error(`read existing entitlement failed: ${existingError.message}`)
+  }
+  console.info(
+    "[entitlement/upsert] before write:",
+    JSON.stringify({
+      userId: input.userId,
+      incoming: {
+        status: input.status,
+        productId: input.productId,
+        originalTransactionId: input.originalTransactionId,
+        latestTransactionId: input.latestTransactionId,
+        environment: input.environment ?? null,
+        expiresAt: input.expiresAt,
+        trialEndsAt: input.trialEndsAt,
+      },
+      existing: existingRow ?? null,
+    }),
+  )
+
   const basePayload = {
     user_id: input.userId,
     status: input.status,
@@ -221,5 +249,12 @@ export async function upsertVerifiedEntitlement(
   if (error !== null) {
     throw new Error(`upsert verified entitlement failed: ${error.message}`)
   }
+  console.info(
+    "[entitlement/upsert] after write:",
+    JSON.stringify({
+      userId: input.userId,
+      persisted: data,
+    }),
+  )
   return toEntitlementView(data)
 }

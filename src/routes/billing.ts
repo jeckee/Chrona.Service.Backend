@@ -91,6 +91,21 @@ billingRoute.post("/subscriptions/verify", async (c) => {
       signedTransaction: parsed.signedTransaction,
       expectedAppAccountToken: user.id,
     })
+    console.info(
+      "[subscriptions/verify] verified transaction:",
+      JSON.stringify({
+        userId: user.id,
+        transactionId: tx.transactionId,
+        originalTransactionId: tx.originalTransactionId,
+        productId: tx.productId,
+        environment: tx.environment,
+        purchaseDate: tx.purchaseDate,
+        expiresDate: tx.expiresDate,
+        revocationDate: tx.revocationDate,
+        status: tx.status,
+        trialEndsAt: tx.trialEndsAt,
+      }),
+    )
   } catch (e) {
     const summary =
       e instanceof Error
@@ -137,6 +152,13 @@ billingRoute.post("/subscriptions/verify", async (c) => {
       expiresAt: tx.expiresDate,
       trialEndsAt: tx.trialEndsAt,
     })
+    console.info(
+      "[subscriptions/verify] response entitlement:",
+      JSON.stringify({
+        userId: user.id,
+        entitlement,
+      }),
+    )
     return c.json({ entitlement }, 200)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
