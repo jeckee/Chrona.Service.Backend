@@ -360,6 +360,7 @@ export async function processAppleNotification(signedPayload: string): Promise<{
         environment,
         expiresAt: new Date().toISOString(),
         trialEndsAt: null,
+        forceExpired: true,
       })
       break
     }

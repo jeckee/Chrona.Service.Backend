@@ -174,6 +174,7 @@ export type UpsertEntitlementInput = {
   environment?: string
   expiresAt: string | null
   trialEndsAt: string | null
+  forceExpired?: boolean
 }
 
 function isMissingEnvironmentColumnError(message: string): boolean {
@@ -181,6 +182,51 @@ function isMissingEnvironmentColumnError(message: string): boolean {
     message.includes("Could not find the 'environment' column") &&
     message.includes("user_entitlements")
   )
+}
+
+function timestampMs(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function entitlementEndMs(input: {
+  status: string
+  expires_at?: string | null
+  trial_ends_at?: string | null
+  expiresAt?: string | null
+  trialEndsAt?: string | null
+}): number | null {
+  const status = normalizeStatus(input.status)
+  if (status === "trial") {
+    return timestampMs(input.trial_ends_at ?? input.trialEndsAt ?? null)
+  }
+  return timestampMs(input.expires_at ?? input.expiresAt ?? null)
+}
+
+function shouldPreserveExistingEntitlement(params: {
+  existing: EntitlementRow | null
+  incomingStatus: "trial" | "active" | "expired"
+  incomingExpiresAt?: string | null
+  incomingTrialEndsAt?: string | null
+  forceExpired?: boolean
+}): boolean {
+  if (params.existing === null) return false
+  if (params.forceExpired === true) return false
+
+  const existingStatus = normalizeStatus(params.existing.status)
+  if (existingStatus !== "trial" && existingStatus !== "active") return false
+  if (shouldTransitionToExpired(params.existing)) return false
+
+  const existingEnd = entitlementEndMs(params.existing)
+  const incomingEnd = entitlementEndMs({
+    status: params.incomingStatus,
+    expiresAt: params.incomingExpiresAt ?? null,
+    trialEndsAt: params.incomingTrialEndsAt ?? null,
+  })
+  if (existingEnd === null || incomingEnd === null) return false
+
+  return incomingEnd < existingEnd
 }
 
 export async function upsertVerifiedEntitlement(
@@ -214,6 +260,30 @@ export async function upsertVerifiedEntitlement(
       existing: existingRow ?? null,
     }),
   )
+
+  if (
+    shouldPreserveExistingEntitlement({
+      existing: existingRow,
+      incomingStatus: input.status,
+      incomingExpiresAt: input.expiresAt,
+      incomingTrialEndsAt: input.trialEndsAt,
+      forceExpired: input.forceExpired,
+    })
+  ) {
+    console.warn(
+      "[entitlement/upsert] ignored stale entitlement update:",
+      JSON.stringify({
+        userId: input.userId,
+        incoming: {
+          status: input.status,
+          latestTransactionId: input.latestTransactionId,
+          expiresAt: input.expiresAt,
+        },
+        existing: existingRow,
+      }),
+    )
+    return toEntitlementView(existingRow)
+  }
 
   const basePayload = {
     user_id: input.userId,
@@ -274,8 +344,45 @@ export async function upsertUserEntitlementFromApple(params: {
   environment?: string | null
   expiresAt?: string | null
   trialEndsAt?: string | null
+  forceExpired?: boolean
 }): Promise<void> {
   const adminClient = getSupabaseServiceRole()
+  const { data: existingRow, error: existingError } = await adminClient
+    .from("user_entitlements")
+    .select(
+      "user_id, status, product_id, original_transaction_id, latest_transaction_id, environment, expires_at, trial_ends_at",
+    )
+    .eq("user_id", params.userId)
+    .maybeSingle<EntitlementRow>()
+
+  if (existingError !== null) {
+    throw new Error(`read existing entitlement failed: ${existingError.message}`)
+  }
+
+  if (
+    shouldPreserveExistingEntitlement({
+      existing: existingRow,
+      incomingStatus: params.status,
+      incomingExpiresAt: params.expiresAt ?? null,
+      incomingTrialEndsAt: params.trialEndsAt ?? null,
+      forceExpired: params.forceExpired,
+    })
+  ) {
+    console.warn(
+      "[entitlement/apple] ignored stale entitlement update:",
+      JSON.stringify({
+        userId: params.userId,
+        incoming: {
+          status: params.status,
+          latestTransactionId: params.latestTransactionId ?? null,
+          expiresAt: params.expiresAt ?? null,
+        },
+        existing: existingRow,
+      }),
+    )
+    return
+  }
+
   const basePayload = {
     user_id: params.userId,
     status: params.status,

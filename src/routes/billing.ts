@@ -159,6 +159,7 @@ billingRoute.post("/subscriptions/verify", async (c) => {
       environment: tx.environment,
       expiresAt: tx.expiresDate,
       trialEndsAt: tx.trialEndsAt,
+      forceExpired: tx.revocationDate !== null,
     })
     console.info(
       "[subscriptions/verify] response entitlement:",

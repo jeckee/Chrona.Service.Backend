@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import {
+  AppStoreServerAPIClient,
+  APIException,
   Environment,
   OfferDiscountType,
+  Status,
   SignedDataVerifier,
   VerificationException,
   VerificationStatus,
@@ -93,6 +96,7 @@ const ENV_BY_NAME: Record<string, Environment> = {
 }
 
 const verifierCache = new Map<Environment, SignedDataVerifier>()
+const apiClientCache = new Map<Environment, AppStoreServerAPIClient>()
 
 function getVerifier(env: Environment): SignedDataVerifier {
   const cached = verifierCache.get(env)
@@ -120,6 +124,53 @@ function getVerifier(env: Environment): SignedDataVerifier {
   )
   verifierCache.set(env, verifier)
   return verifier
+}
+
+function optionalEnv(name: string): string | null {
+  const value = process.env[name]
+  if (value === undefined || value.trim() === "") return null
+  return value.trim()
+}
+
+function normalizePrivateKey(raw: string): string {
+  return raw.replace(/\\n/g, "\n")
+}
+
+function getAppStoreApiClient(env: Environment): AppStoreServerAPIClient | null {
+  if (env === Environment.XCODE) return null
+
+  const cached = apiClientCache.get(env)
+  if (cached !== undefined) return cached
+
+  const signingKey =
+    optionalEnv("APPLE_IN_APP_PURCHASE_PRIVATE_KEY") ??
+    optionalEnv("APPLE_PRIVATE_KEY")
+  const keyId =
+    optionalEnv("APPLE_IN_APP_PURCHASE_KEY_ID") ??
+    optionalEnv("APPLE_KEY_ID")
+  const issuerId =
+    optionalEnv("APPLE_IN_APP_PURCHASE_ISSUER_ID") ??
+    optionalEnv("APPLE_ISSUER_ID")
+  const bundleId = optionalEnv("APPLE_BUNDLE_ID")
+
+  if (
+    signingKey === null ||
+    keyId === null ||
+    issuerId === null ||
+    bundleId === null
+  ) {
+    return null
+  }
+
+  const client = new AppStoreServerAPIClient(
+    normalizePrivateKey(signingKey),
+    keyId,
+    issuerId,
+    bundleId,
+    env,
+  )
+  apiClientCache.set(env, client)
+  return client
 }
 
 /**
@@ -180,8 +231,181 @@ function resolveStatus(
   return { status: "active", trialEndsAt: null }
 }
 
+function resolveStatusFromAppleStatus(
+  payload: JWSTransactionDecodedPayload,
+  appleStatus: Status | number | undefined,
+  now: Date,
+): { status: AppleTransactionStatus; trialEndsAt: string | null } {
+  if (
+    appleStatus === Status.ACTIVE ||
+    appleStatus === Status.BILLING_GRACE_PERIOD
+  ) {
+    if (payload.offerDiscountType === OfferDiscountType.FREE_TRIAL) {
+      return {
+        status: "trial",
+        trialEndsAt: toIsoFromMs(payload.expiresDate),
+      }
+    }
+    return { status: "active", trialEndsAt: null }
+  }
+  return resolveStatus(payload, now)
+}
+
 function nonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim() !== ""
+}
+
+function toVerifiedTransaction(params: {
+  payload: JWSTransactionDecodedPayload
+  expectedAppAccountToken: string
+  allowedProductIds: ReadonlySet<string>
+  statusOverride?: Status | number
+}): VerifiedAppleTransaction {
+  const { payload } = params
+  if (
+    !nonEmptyString(payload.transactionId) ||
+    !nonEmptyString(payload.originalTransactionId) ||
+    !nonEmptyString(payload.productId) ||
+    !nonEmptyString(payload.bundleId) ||
+    !nonEmptyString(payload.environment)
+  ) {
+    throw new AppleTransactionVerificationError(
+      "Required fields missing from transaction payload",
+    )
+  }
+
+  if (!params.allowedProductIds.has(payload.productId)) {
+    throw new AppleTransactionVerificationError(
+      `productId ${payload.productId} is not in allowlist`,
+    )
+  }
+
+  const expectedToken = params.expectedAppAccountToken.trim().toLowerCase()
+  const actualToken = nonEmptyString(payload.appAccountToken)
+    ? payload.appAccountToken.trim().toLowerCase()
+    : null
+  if (actualToken === null || actualToken !== expectedToken) {
+    throw new AppleTransactionVerificationError(
+      "appAccountToken does not match authenticated user",
+      {
+        transactionId: payload.transactionId,
+        originalTransactionId: payload.originalTransactionId,
+        environment: payload.environment,
+        productId: payload.productId,
+        expectedAppAccountToken: expectedToken,
+        actualAppAccountToken: actualToken ?? "(missing or empty)",
+      },
+    )
+  }
+
+  const { status, trialEndsAt } = resolveStatusFromAppleStatus(
+    payload,
+    params.statusOverride,
+    new Date(),
+  )
+
+  return {
+    transactionId: payload.transactionId,
+    originalTransactionId: payload.originalTransactionId,
+    productId: payload.productId,
+    bundleId: payload.bundleId,
+    environment: payload.environment,
+    purchaseDate: toIsoFromMs(payload.purchaseDate),
+    expiresDate: toIsoFromMs(payload.expiresDate),
+    offerType: typeof payload.offerType === "number" ? payload.offerType : null,
+    offerIdentifier: nonEmptyString(payload.offerIdentifier)
+      ? payload.offerIdentifier
+      : null,
+    offerDiscountType: nonEmptyString(payload.offerDiscountType)
+      ? payload.offerDiscountType
+      : null,
+    revocationDate: toIsoFromMs(payload.revocationDate),
+    appAccountToken: payload.appAccountToken ?? null,
+    status,
+    trialEndsAt,
+  }
+}
+
+function parseEnvironment(raw: string): Environment | null {
+  return ENV_BY_NAME[raw] ?? null
+}
+
+function expiresMs(tx: VerifiedAppleTransaction): number {
+  if (tx.expiresDate === null) return 0
+  const parsed = Date.parse(tx.expiresDate)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function compareTransactions(
+  a: VerifiedAppleTransaction,
+  b: VerifiedAppleTransaction,
+): number {
+  const byExpiry = expiresMs(a) - expiresMs(b)
+  if (byExpiry !== 0) return byExpiry
+  return a.transactionId.localeCompare(b.transactionId)
+}
+
+async function resolveLatestSubscriptionTransaction(params: {
+  initial: VerifiedAppleTransaction
+  expectedAppAccountToken: string
+  allowedProductIds: ReadonlySet<string>
+}): Promise<VerifiedAppleTransaction> {
+  const env = parseEnvironment(params.initial.environment)
+  const client = env === null ? null : getAppStoreApiClient(env)
+  if (client === null) return params.initial
+
+  let response
+  try {
+    response = await client.getAllSubscriptionStatuses(
+      params.initial.originalTransactionId,
+    )
+  } catch (e) {
+    const detail =
+      e instanceof APIException
+        ? `http=${e.httpStatusCode} apiError=${e.apiError ?? "null"}`
+        : e instanceof Error
+          ? e.message
+          : String(e)
+    console.warn("[subscriptions/verify] Apple status lookup failed:", detail)
+    return params.initial
+  }
+
+  const candidates: VerifiedAppleTransaction[] = [params.initial]
+  for (const group of response.data ?? []) {
+    for (const item of group.lastTransactions ?? []) {
+      if (!nonEmptyString(item.signedTransactionInfo)) continue
+      let payload: JWSTransactionDecodedPayload
+      try {
+        payload = await verifyAcrossEnvironments(item.signedTransactionInfo)
+      } catch (e) {
+        console.warn(
+          "[subscriptions/verify] latest transaction JWS rejected:",
+          e instanceof Error ? e.message : String(e),
+        )
+        continue
+      }
+      try {
+        const tx = toVerifiedTransaction({
+          payload,
+          expectedAppAccountToken: params.expectedAppAccountToken,
+          allowedProductIds: params.allowedProductIds,
+          statusOverride: item.status,
+        })
+        if (tx.originalTransactionId === params.initial.originalTransactionId) {
+          candidates.push(tx)
+        }
+      } catch (e) {
+        console.warn(
+          "[subscriptions/verify] latest transaction ignored:",
+          e instanceof Error ? e.message : String(e),
+        )
+      }
+    }
+  }
+
+  return candidates.reduce((best, tx) =>
+    compareTransactions(tx, best) > 0 ? tx : best,
+  )
 }
 
 /**
@@ -210,62 +434,15 @@ export async function verifyAppleSignedTransaction(params: {
     throw e
   }
 
-  if (
-    !nonEmptyString(payload.transactionId) ||
-    !nonEmptyString(payload.originalTransactionId) ||
-    !nonEmptyString(payload.productId) ||
-    !nonEmptyString(payload.bundleId) ||
-    !nonEmptyString(payload.environment)
-  ) {
-    throw new AppleTransactionVerificationError(
-      "Required fields missing from transaction payload",
-    )
-  }
+  const initial = toVerifiedTransaction({
+    payload,
+    expectedAppAccountToken: params.expectedAppAccountToken,
+    allowedProductIds,
+  })
 
-  if (!allowedProductIds.has(payload.productId)) {
-    throw new AppleTransactionVerificationError(
-      `productId ${payload.productId} is not in allowlist`,
-    )
-  }
-
-  const expectedToken = params.expectedAppAccountToken.trim().toLowerCase()
-  const actualToken = nonEmptyString(payload.appAccountToken)
-    ? payload.appAccountToken.trim().toLowerCase()
-    : null
-  if (actualToken === null || actualToken !== expectedToken) {
-    throw new AppleTransactionVerificationError(
-      "appAccountToken does not match authenticated user",
-      {
-        transactionId: payload.transactionId,
-        originalTransactionId: payload.originalTransactionId,
-        environment: payload.environment,
-        productId: payload.productId,
-        expectedAppAccountToken: expectedToken,
-        actualAppAccountToken: actualToken ?? "(missing or empty)",
-      },
-    )
-  }
-
-  const { status, trialEndsAt } = resolveStatus(payload, new Date())
-
-  return {
-    transactionId: payload.transactionId,
-    originalTransactionId: payload.originalTransactionId,
-    productId: payload.productId,
-    bundleId: payload.bundleId,
-    environment: payload.environment,
-    purchaseDate: toIsoFromMs(payload.purchaseDate),
-    expiresDate: toIsoFromMs(payload.expiresDate),
-    offerType: typeof payload.offerType === "number" ? payload.offerType : null,
-    offerIdentifier: nonEmptyString(payload.offerIdentifier)
-      ? payload.offerIdentifier
-      : null,
-    offerDiscountType: nonEmptyString(payload.offerDiscountType)
-      ? payload.offerDiscountType
-      : null,
-    revocationDate: toIsoFromMs(payload.revocationDate),
-    appAccountToken: payload.appAccountToken ?? null,
-    status,
-    trialEndsAt,
-  }
+  return resolveLatestSubscriptionTransaction({
+    initial,
+    expectedAppAccountToken: params.expectedAppAccountToken,
+    allowedProductIds,
+  })
 }
